@@ -1,124 +1,49 @@
 <!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Check-in HUB</title>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
-  <style>
-    :root { --brand:#dc824f; --text:#2b2b2b; --muted:#7c7c7c; --bg:#fff; }
-    *{ box-sizing:border-box; }
-    body{ font-family:Inter,system-ui,Segoe UI,Arial,sans-serif; margin:0; background:#faf7f5; color:var(--text); }
-    .wrap{ max-width:520px; margin:60px auto; padding:28px; background:#fff; border-radius:20px; box-shadow:0 10px 30px rgba(0,0,0,.06); }
-    h1{ font-size:28px; margin:0 0 16px; display:flex; align-items:center; gap:10px; }
-    h1::before{ content:"📍"; font-size:26px; }
-    .row{ margin:16px 0; }
-    input{ width:100%; padding:16px; font-size:18px; border:1px solid #e7e2df; border-radius:12px; outline:none; }
-    button{ width:100%; padding:16px; font-size:18px; border:0; border-radius:12px; background:var(--brand); color:#fff; cursor:pointer; }
-    button:disabled{ opacity:.6; cursor:not-allowed; }
-    .muted{ color:var(--muted); font-size:14px; margin-top:10px; }
-    .status{ margin-top:12px; font-weight:600; }
-  </style>
-</head>
-<body>
-  <main class="wrap">
-    <h1>Check-in HUB</h1>
-
-    <div class="row">
-      <input id="idInput" placeholder="Seu ID (ex.: 449213)" inputmode="numeric" />
-    </div>
-
-    <div class="row">
-      <button id="btn">Registrar</button>
-    </div>
-
-    <div id="status" class="status"></div>
-    <p class="muted">Falha ao obter localização ou enviar.<br/>Ative o GPS e permita a localização.</p>
-  </main>
-
-  <script>
-    (function(){
-      const idInput = document.querySelector("#idInput");
-      const btn = document.querySelector("#btn");
-      const statusMsg = document.querySelector("#status");
-
-      const setStatus = (msg, color="") => {
-        statusMsg.textContent = msg;
-        statusMsg.style.color = color || "";
-      };
-
-      // checa API viva
-      fetch("/api/ping").then(r=>r.json()).then(j=>{
-        // opcional: console.log("ping:", j);
-      }).catch(()=>{});
-
-      // função principal
-      async function doCheckin(){
-        const id = (idInput.value || "").trim();
-        if(!id){ setStatus("Informe o seu ID.", "red"); return; }
-
-        btn.disabled = true;
-        setStatus("Obtendo localização...");
-
-        // pega posição
-        let pos;
-        try{
-          pos = await new Promise((res, rej)=>{
-            navigator.geolocation.getCurrentPosition(
-              p => res(p),
-              e => rej(e),
-              { enableHighAccuracy:true, timeout:15000, maximumAge:0 }
-            );
-          });
-        }catch(e){
-          setStatus("Não foi possível obter o GPS. Permita a localização.", "red");
-          btn.disabled = false;
-          return;
-        }
-
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        const acc = pos.coords.accuracy;
-
-        setStatus("Enviando check-in...");
-
-        // envia para a função
-        let resp, json = null;
-        try{
-          resp = await fetch("/api/checkin", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              id,
-              lat,
-              lng,
-              acc,
-              deviceId: "web",
-              ua: navigator.userAgent
-            })
-          });
-          json = await resp.json().catch(()=> ({}));
-        }catch(e){
-          setStatus("Falha ao enviar. Tente novamente.", "red");
-          btn.disabled = false;
-          return;
-        }
-
-        if(!resp.ok){
-          setStatus(json?.msg || "Falha no envio.", "red");
-          btn.disabled = false;
-          return;
-        }
-
-        setStatus("✅ Check-in realizado com sucesso!", "green");
-        btn.disabled = false;
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Check-in HUB</title>
+    <style>
+      :root { --brand:#de874f; --ok:#1e7f43; --err:#b00020; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#fff; color:#222; margin:0; }
+      .wrap { max-width: 720px; margin: 60px auto; padding: 0 16px; }
+      .card { margin: 24px auto; padding: 24px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.08); }
+      h1 { font-size: 28px; margin: 0 0 18px; }
+      form { display: grid; gap: 14px; }
+      input[type=text] {
+        font-size: 18px; padding: 14px 16px; border: 2px solid #ddd; border-radius: 12px; outline: none;
       }
+      input[type=text]:focus { border-color: var(--brand); }
+      button {
+        font-size: 18px; font-weight: 700; padding: 14px 18px; border: 0; border-radius: 12px;
+        background: var(--brand); color: #fff; cursor: pointer;
+      }
+      button[disabled] { opacity: .6; cursor: not-allowed; }
+      .status { min-height: 22px; font-size: 15px; }
+      .status.ok { color: var(--ok); }
+      .status.err { color: var(--err); }
+      .muted { color:#777; font-size: 14px; }
+      .logo { display:block; margin: 0 auto 8px; width: 180px; }
+      .title { display:flex; align-items:center; gap:10px; }
+      .pin { font-size: 22px; }
+    </style>
+    <!-- carregue depois do DOM para garantir que os seletores encontrem os elementos -->
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <div class="wrap">
+      <img class="logo" src="https://i.imgur.com/4tCz6uG.png" alt="kart" />
+      <div class="card">
+        <div class="title"><span class="pin">📍</span><h1>Check-in HUB</h1></div>
 
-      btn.addEventListener("click", (e)=>{ e.preventDefault(); doCheckin(); });
-      // expõe função manual (debug no console)
-      window.__doCheckin = doCheckin;
-    })();
-  </script>
-</body>
+        <form id="checkin-form" autocomplete="off">
+          <input id="driver-id" type="text" inputmode="numeric" placeholder="Seu ID (ex.: 449213)" required />
+          <button id="btn-submit" type="submit">Registrar</button>
+          <div id="status" class="status"></div>
+          <div class="muted">Ative o GPS e permita a localização.</div>
+        </form>
+      </div>
+    </div>
+  </body>
 </html>

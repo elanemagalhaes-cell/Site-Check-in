@@ -5,71 +5,172 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Check-in HUB</title>
   <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:#fff;margin:0;display:flex;justify-content:center}
-    .wrap{max-width:380px;width:100%;padding:24px 16px}
-    .card{background:#fff;border-radius:16px;box-shadow:0 6px 18px rgba(0,0,0,.08);padding:20px}
-    .logo{display:block;margin:28px auto 8px;width:160px;height:auto}
-    h1{font-size:26px;margin:6px 0 18px;text-align:center;color:#b85d2c}
-    .input{width:100%;box-sizing:border-box;padding:14px 12px;border:1px solid #e6e6e6;border-radius:10px;font-size:16px}
-    .btn{margin-top:14px;width:100%;padding:14px;border:none;border-radius:10px;background:#e58a52;color:#fff;font-weight:600;font-size:16px;cursor:pointer}
-    .msg{margin-top:14px;font-size:14px}
-    .muted{color:#777;font-size:12px;margin-top:6px}
+    :root { --brand:#d97a45; --bg:#fff7f2; }
+    html,body{margin:0;padding:0;background:#fff;}
+    .wrap{max-width:760px;margin:40px auto;padding:24px}
+    .card{background:#fff;border-radius:18px;box-shadow:0 10px 30px rgba(0,0,0,.08);padding:28px}
+    h1{font-size:32px;margin:0 0 14px;color:#7b3b1b}
+    .lead{color:#666;margin:-6px 0 18px}
+    .row{margin:14px 0}
+    input[type="text"]{width:100%;font-size:18px;padding:14px 16px;border-radius:12px;border:1px solid #e6e6e6;outline:none}
+    button{width:100%;padding:16px;border:0;border-radius:12px;background:var(--brand);color:#fff;font-size:18px;cursor:pointer}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .msg{margin-top:14px;font-size:14px;color:#444}
+    .msg.err{color:#b00020}
+    .tag{display:inline-block;background:#ffe7d7;color:#7b3b1b;border-radius:999px;padding:4px 10px;font-size:12px;margin-right:6px}
+    .logo{display:block;margin:0 auto 18px;max-width:200px}
+    .muted{color:#777}
+    .ok{color:#0a7b4f}
+    .grid{display:grid;grid-template-columns:1fr;gap:12px}
+    @media (min-width:680px){ .grid{grid-template-columns:1fr 1fr} }
+    .small{font-size:12px;color:#777}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <img class="logo" src="assets/shopee-dog.png" alt="Shopee mascot">
+    <img class="logo" src="./assets/shopee-dog.png" alt="Mascote" />
     <div class="card">
       <h1>📍 Check-in HUB</h1>
-      <input id="id" class="input" inputmode="numeric" placeholder="Driver ID" />
-      <button class="btn" id="btn">Registrar</button>
-      <div id="out" class="msg"></div>
-      <div class="muted">Ative o GPS e permita a localização.</div>
+      <p class="lead">Informe seu <b>Driver ID</b> e permita a localização.</p>
+
+      <div class="row">
+        <input id="idDriver" type="text" placeholder="Ex.: 449213" inputmode="numeric" />
+      </div>
+
+      <div class="row grid">
+        <button id="btn" onclick="registrar()">Registrar</button>
+        <button id="btnTryGps" onclick="testarGps()" type="button" title="Testa apenas o GPS">Testar GPS</button>
+      </div>
+
+      <div id="msg" class="msg muted"></div>
+      <div id="dbg" class="small"></div>
     </div>
+
+    <p class="small muted" style="margin-top:10px">
+      Dica: se aparecer <i>“permissão negada”</i>, clique no cadeado 🔒 da URL → Localização → <b>Permitir</b> e recarregue.
+    </p>
   </div>
 
-  <script>
-    const $ = (sel) => document.querySelector(sel);
-    const out = $('#out'), idEl = $('#id'), btn = $('#btn');
+<script>
+/* ========= util ========= */
+const el = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-    async function getPosition() {
-      return new Promise((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(
-          (p) => resolve(p),
-          (e) => reject(e),
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-        );
-      });
+function setMsg(text, kind='') {
+  const m = el('msg');
+  m.className = 'msg ' + (kind || '');
+  m.textContent = text;
+}
+
+function setDbg(obj) {
+  el('dbg').textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+}
+
+/* pega/gera id do aparelho p/ regra de “mesmo celular” */
+function getDeviceId(){
+  let d = localStorage.getItem('device_id');
+  if (!d) {
+    d = 'dev_' + crypto.getRandomValues(new Uint32Array(2)).join('');
+    localStorage.setItem('device_id', d);
+  }
+  return d;
+}
+
+/* ========= geolocalização ========= */
+function pedirPosicao() {
+  return new Promise((resolve, reject) => {
+    if (!('geolocation' in navigator)) {
+      return reject(new Error('Geolocalização não suportada neste navegador.'));
     }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve(pos),
+      err => reject(err),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  });
+}
 
-    btn.addEventListener('click', async () => {
-      out.textContent = 'Enviando...';
-      try {
-        const id = idEl.value.trim();
-        if (!id) { out.textContent = 'Informe seu Driver ID.'; return; }
+async function testarGps() {
+  setMsg('Testando GPS…');
+  try {
+    const p = await pedirPosicao();
+    const info = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy + 'm' };
+    setMsg('GPS OK ✓', 'ok');
+    setDbg(info);
+  } catch (e) {
+    tratarErroGeo(e);
+  }
+}
 
-        const pos = await getPosition();
-        const { latitude:lat, longitude:lng, accuracy:acc } = pos.coords || {};
-        const payload = {
-          id, lat, lng, acc,
-          deviceId: (await crypto.subtle.digest("SHA-256", new TextEncoder().encode(navigator.userAgent + (navigator.platform||""))))
-            .then(buf => Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')),
-          ua: navigator.userAgent
-        };
-        payload.deviceId = await payload.deviceId;
+function tratarErroGeo(e){
+  // e.code: 1=PERMISSION_DENIED, 2=POSITION_UNAVAILABLE, 3=TIMEOUT
+  const cod = e.code ?? '—';
+  let msg = `Falha ao obter localização (cód ${cod}). `;
+  if (cod === 1) msg += 'Permita a localização no cadeado da URL e recarregue.';
+  if (cod === 2) msg += 'Sinal fraco. Vá para área aberta ou ative o GPS/Alta precisão.';
+  if (cod === 3) msg += 'Tempo esgotado. Tente novamente.';
+  setMsg(msg, 'err');
+  setDbg(String(e?.message || e));
+}
 
-        const r = await fetch('/api/checkin', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        const data = await r.json();
-        out.textContent = data.msg || 'OK';
+/* ========= envio ========= */
+async function registrar() {
+  const btn = el('btn');
+  btn.disabled = true;
+  setMsg('Coletando GPS…');
 
-      } catch (e) {
-        out.textContent = 'Falha ao obter localização ou enviar.';
-      }
+  const id = String(el('idDriver').value || '').trim().replace(/\D/g,'');
+  if (!id) {
+    setMsg('Informe o Driver ID.', 'err'); btn.disabled = false; return;
+  }
+
+  try {
+    const pos = await pedirPosicao();
+    const lat = pos.coords.latitude;
+    const lng = pos.coords.longitude;
+    const acc = pos.coords.accuracy;
+
+    setMsg('Enviando check-in…');
+
+    const payload = {
+      id,
+      lat, lng, acc,
+      deviceId: getDeviceId(),
+      ua: navigator.userAgent
+    };
+
+    // Cloudflare Pages Functions: rota relativa
+    const resp = await fetch('/api/checkin', {
+      method: 'POST',
+      headers: { 'content-type':'application/json' },
+      body: JSON.stringify(payload)
     });
-  </script>
+
+    const data = await resp.json().catch(()=>({ ok:false, msg:'Erro ao ler resposta' }));
+
+    if (resp.ok && data?.ok) {
+      setMsg(`✅ Check-in OK! ${data?.nome ? 'Driver: '+data.nome : ''}`);
+      setDbg({enviado: payload, recebido: data});
+    } else {
+      // backend pode responder 200 com ok:false para FORA_RAIO etc.
+      const texto = data?.msg || `Falha (${resp.status})`;
+      setMsg(texto, 'err');
+      setDbg({enviado: payload, recebido: data});
+    }
+  } catch (e) {
+    tratarErroGeo(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ====== UX: preencher último ID digitado ====== */
+(() => {
+  const LAST_KEY = 'last_driver_id';
+  const input = el('idDriver');
+  input.value = localStorage.getItem(LAST_KEY) || '';
+  input.addEventListener('change', () => localStorage.setItem(LAST_KEY, input.value));
+})();
+</script>
 </body>
 </html>

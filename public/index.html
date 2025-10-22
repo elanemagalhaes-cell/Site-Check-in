@@ -1,41 +1,70 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Check-in HUB</title>
+  <link rel="icon" href="data:," />
   <style>
-    body { font-family: Arial, sans-serif; background:#fff; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; }
-    .container { text-align:center; background:white; padding:30px; border-radius:20px; box-shadow:0 4px 20px rgba(0,0,0,0.1); width:320px; }
-    h1 { color:#b24b1e; margin-bottom:20px; }
-    input { width:90%; padding:10px; font-size:18px; border:1px solid #ccc; border-radius:10px; margin-bottom:20px; }
-    button { width:95%; padding:12px; font-size:18px; border:none; border-radius:10px; background:#e18248; color:white; cursor:pointer; }
-    button:disabled { opacity:0.6; cursor:not-allowed; }
-    p { font-size:14px; color:#555; margin-top:10px; }
-    img { width:120px; }
+    :root { --brand:#df844d; --txt:#2b2b2b; }
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial; }
+    body { margin:0; background:#fff; color:var(--txt); }
+    .wrap { min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:20px; }
+    .card { width:100%; max-width:520px; border-radius:20px; padding:28px; box-shadow: 0 10px 30px rgba(0,0,0,.08); border:1px solid #eee; }
+    h1 { font-size:28px; margin:0 0 8px; display:flex; align-items:center; gap:10px; }
+    h1::before { content:"📍"; }
+    .row { margin:14px 0; }
+    input { width:100%; padding:14px 16px; border:1px solid #ddd; border-radius:12px; font-size:16px; outline:none; }
+    button { width:100%; border:0; border-radius:12px; padding:14px 16px; background:var(--brand); color:#fff; font-weight:600; font-size:18px; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .msg { margin-top:12px; font-size:14px; color:#666; }
+    .msg strong { color:#000; }
+    .status { margin-top:10px; font-weight:600; }
   </style>
 </head>
 <body>
-  <div class="container">
-    <img src="https://cf.shopee.com.br/file/sg-11134201-7rd4i-ly02kz5xgxyqa3" alt="Mascote Shopee" />
-    <h1>📍 Check-in HUB</h1>
-    <input id="driverId" placeholder="Informe seu ID" type="text" value="449213" />
-    <!-- fallback onclick garante o disparo mesmo se o addEventListener não anexar -->
-    <button id="checkinBtn" onclick="window.__doCheckin && window.__doCheckin()">Registrar</button>
-    <p id="statusMsg">Ative o GPS e permita a localização.</p>
+  <div class="wrap">
+    <div class="card">
+      <div style="text-align:center;margin-bottom:16px;">
+        <img alt="" src="https://i.imgur.com/6j87QzL.png" style="height:120px;"/>
+      </div>
+      <h1>Check-in HUB</h1>
+
+      <div class="row">
+        <input id="idInput" placeholder="Digite seu ID" inputmode="numeric" />
+      </div>
+
+      <div class="row">
+        <button id="btn">Registrar</button>
+      </div>
+
+      <div id="status" class="status"></div>
+      <div class="msg">
+        <div>Falha ao obter localização ou enviar.</div>
+        <div>Ative o GPS e permita a localização.</div>
+      </div>
+    </div>
   </div>
 
   <script>
-    console.log("✅ script loaded");
-    const btn = document.getElementById("checkinBtn");
-    const input = document.getElementById("driverId");
-    const statusMsg = document.getElementById("statusMsg");
+    // (Opcional) mostra sua config atual – a validação oficial é no servidor
+    const LAT_BASE = -22.79999;
+    const LNG_BASE = -43.35049;
+    const MAX_DIST_METERS = 2000;
+
+    const btn = document.getElementById('btn');
+    const idInput = document.getElementById('idInput');
+    const statusEl = document.getElementById('status');
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    function setStatus(text, color="#444") {
+      statusEl.textContent = text;
+      statusEl.style.color = color;
+    }
 
     async function getPosition() {
       return new Promise((resolve, reject) => {
-        if (!navigator.geolocation) {
-          return reject(new Error("Geolocation não suportada"));
-        }
         navigator.geolocation.getCurrentPosition(resolve, reject, {
           enableHighAccuracy: true,
           timeout: 15000,
@@ -44,40 +73,50 @@
       });
     }
 
-    // função global para o fallback onclick
-    window.__doCheckin = async function () {
+    function haversineMeters(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const toRad = d => d * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+      return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    async function doCheckin() {
+      btn.disabled = true;
+      setStatus("Obtendo localização…");
+
+      let pos;
       try {
-        console.log("🔹 Clique recebido");
-        btn.disabled = true;
-        statusMsg.style.color = "#555";
-        statusMsg.textContent = "Obtendo localização...";
+        pos = await getPosition();
+      } catch (e) {
+        setStatus("Permita o acesso à localização e tente novamente.", "red");
+        btn.disabled = false;
+        return;
+      }
 
-        const id = (input.value || "").trim();
-        if (!id) {
-          statusMsg.textContent = "Informe seu ID antes de registrar.";
-          btn.disabled = false;
-          return;
-        }
+      const id = (idInput.value || "").trim();
+      if (!id) { setStatus("Informe seu ID.", "red"); btn.disabled = false; return; }
 
-        // 1) ping (testa rota e CORS)
-        try {
-          const ping = await fetch("/api/ping").then(r => r.json());
-          console.log("📶 /api/ping =>", ping);
-        } catch (e) {
-          console.warn("⚠️ Falha no /api/ping", e);
-        }
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const acc = pos.coords.accuracy;
 
-        // 2) localização
-        const pos = await getPosition();
-        const lat = Number(pos.coords.latitude.toFixed(6));
-        const lng = Number(pos.coords.longitude.toFixed(6));
-        const acc = Number(pos.coords.accuracy.toFixed(2));
-        console.log("📍 Localização:", { lat, lng, acc });
+      const dist = Math.round(haversineMeters(lat, lng, LAT_BASE, LNG_BASE));
+      console.log("Local:", { lat, lng, acc: acc+"m", dist });
 
-        statusMsg.textContent = "Localização obtida, enviando...";
+      // opcional: feedback local de distância
+      if (dist > MAX_DIST_METERS) {
+        setStatus(`Fora do perímetro (${dist}m > ${MAX_DIST_METERS}m).`, "red");
+        btn.disabled = false;
+        return;
+      }
 
-        // 3) POST /api/checkin
-        const resp = await fetch("/api/checkin", {
+      setStatus("Enviando check-in…");
+
+      let resp, json;
+      try {
+        resp = await fetch("/api/checkin", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -85,31 +124,33 @@
             lat,
             lng,
             acc,
-            deviceId: "web-check",
+            deviceId: "web",
             ua: navigator.userAgent
-          })
+          }),
         });
-
-        const json = await resp.json().catch(() => ({}));
-        console.log("📡 Resposta /api/checkin:", resp.status, json);
-
-        if (!resp.ok) throw new Error(json.msg || "Falha no envio");
-
-        statusMsg.textContent = "✅ Check-in realizado com sucesso!";
-        statusMsg.style.color = "green";
-      } catch (err) {
-        console.error("❌ Erro:", err);
-        statusMsg.textContent = "Falha ao obter localização ou enviar.";
-        statusMsg.style.color = "red";
-      } finally {
+        json = await resp.json().catch(() => ({}));
+      } catch (e) {
+        setStatus("Falha ao enviar. Verifique sua conexão.", "red");
         btn.disabled = false;
+        return;
       }
-    };
 
-    // listener “normal” (se falhar, o onclick do botão garante)
+      console.log("Resposta /api/checkin =>", resp.status, json);
+
+      if (!resp.ok || !json.ok) {
+        setStatus(json?.msg || "Falha no envio.", "red");
+        btn.disabled = false;
+        return;
+      }
+
+      setStatus("✅ Check-in realizado com sucesso!", "green");
+      await sleep(1500);
+      btn.disabled = false;
+    }
+
     btn.addEventListener("click", (e) => {
       e.preventDefault();
-      window.__doCheckin();
+      doCheckin();
     });
   </script>
 </body>

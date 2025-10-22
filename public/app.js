@@ -1,115 +1,138 @@
 // public/app.js
-console.log("✅ app.js carregado com sucesso");
+console.log("✅ app.js carregado");
 
-// cria/pega um deviceId persistente para identificar o aparelho
-function getDeviceId() {
-  const KEY = "checkin_device_id";
-  let id = localStorage.getItem(KEY);
-  if (!id) {
-    id = "web-" + Math.random().toString(36).slice(2, 10);
-    localStorage.setItem(KEY, id);
-  }
-  return id;
-}
+(() => {
+  // ==== Configurações do HUB ====
+  const HUB = {
+    lat: -22.79999,
+    lng: -43.35049,
+    radiusKm: 2.0,   // raio permitido
+    minAcc: 50       // precisão mínima (m)
+  };
 
-function $(sel) { return document.querySelector(sel); }
+  // ==== Seletores ====
+  const input = document.querySelector("#driverId");
+  const btn = document.querySelector("#btn");
+  const statusMsg = document.querySelector("#status");
 
-function ensureStatusElement() {
-  let el = $("#statusMsg");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "statusMsg";
-    el.style.marginTop = "12px";
-    el.style.fontSize = "14px";
-    const card = document.querySelector("form, main, .card, .box, body");
-    (card || document.body).appendChild(el);
-  }
-  return el;
-}
-
-async function doCheckin() {
-  const btn    = document.querySelector('button[type="submit"], button, #btnCheckin');
-  const input  = document.querySelector('input[type="text"], input[type="number"], input');
-  const status = ensureStatusElement();
-
-  if (!input) {
-    alert("Campo de ID não encontrado na página.");
-    return;
-  }
-  const id = (input.value || "").trim();
-  if (!id) {
-    status.textContent = "Informe o seu ID.";
-    status.style.color = "red";
+  if (!input || !btn || !statusMsg) {
+    console.warn("⚠️ Elementos #driverId, #btn ou #status não encontrados.");
     return;
   }
 
-  // trava o botão
-  if (btn) btn.disabled = true;
-  status.textContent = "Obtendo localização…";
-  status.style.color = "#444";
+  // ==== Utils ====
+  const setStatus = (msg, color = "#555") => {
+    statusMsg.textContent = msg;
+    statusMsg.style.color = color;
+  };
 
-  // pega a posição
-  const getPosition = () =>
-    new Promise((resolve, reject) => {
+  // Haversine
+  function distanceKm(lat1, lon1, lat2, lon2) {
+    const toRad = (x) => (x * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+  }
+
+  async function getPosition() {
+    return new Promise((resolve, reject) => {
       navigator.geolocation.getCurrentPosition(
-        pos => resolve(pos),
-        err => reject(err),
+        resolve,
+        reject,
         { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
     });
+  }
 
-  try {
-    const pos = await getPosition();
-    const { latitude: lat, longitude: lng, accuracy: acc } = pos.coords;
-    console.log("📍 Localização:", { lat, lng, acc });
-
-    status.textContent = "Enviando…";
-
-    const resp = await fetch("/api/checkin", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        id,
-        lat,
-        lng,
-        acc: Math.round(acc ?? 9999),
-        deviceId: getDeviceId(),
-        ua: navigator.userAgent
-      })
-    });
-
-    const json = await resp.json().catch(() => ({}));
-    console.log("📦 /api/checkin =>", resp.status, json);
-
-    if (!resp.ok || json?.ok === false) {
-      // mensagem do servidor (ex.: fora do perímetro, já registrou hoje, etc.)
-      throw new Error(json?.msg || `Falha no envio (HTTP ${resp.status})`);
+  async function doCheckin() {
+    const id = (input.value || "").trim();
+    if (!id) {
+      setStatus("Informe o Driver ID.", "red");
+      input.focus();
+      return;
     }
 
-    status.textContent = "✅ Check-in realizado com sucesso!";
-    status.style.color = "green";
-  } catch (err) {
-    console.error("❌ Erro:", err);
-    status.textContent = err?.message || "Falha ao obter localização ou enviar.";
-    status.style.color = "red";
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
+    btn.disabled = true;
+    setStatus("Solicitando GPS…", "#555");
 
-// liga o botão automaticamente (qualquer botão da tela)
-(function wireUp() {
-  const btn = document.querySelector('button[type="submit"], button, #btnCheckin');
-  if (btn) {
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      doCheckin();
-    });
-  } else {
-    console.warn("⚠️ Não achei botão na página.");
+    let coords;
+    try {
+      const pos = await getPosition();
+      coords = pos.coords;
+    } catch (err) {
+      console.error("Erro geolocalização:", err);
+      setStatus("❌ Permita o acesso à localização e tente novamente.", "red");
+      btn.disabled = false;
+      return;
+    }
+
+    const { latitude: lat, longitude: lng, accuracy: acc } = coords;
+    console.log("📍 Local:", { lat, lng, acc });
+
+    if (typeof acc === "number" && acc > HUB.minAcc) {
+      setStatus(`Sinal de GPS fraco (${Math.round(acc)}m). Vá para área aberta.`, "red");
+      btn.disabled = false;
+      return;
+    }
+
+    const dist = distanceKm(lat, lng, HUB.lat, HUB.lng);
+    console.log("📏 Distância até HUB (km):", dist.toFixed(3));
+
+    if (dist > HUB.radiusKm) {
+      setStatus(
+        `Fora do perímetro: ${dist.toFixed(2)} km (limite ${HUB.radiusKm} km).`,
+        "red"
+      );
+      btn.disabled = false;
+      return;
+    }
+
+    setStatus("Enviando check-in…");
+
+    try {
+      const resp = await fetch("/api/checkin", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id,
+          lat,
+          lng,
+          acc,
+          deviceId: "web",
+          ua: navigator.userAgent
+        })
+      });
+
+      let json = {};
+      try { json = await resp.json(); } catch {}
+
+      console.log("🔁 /api/checkin =>", resp.status, json);
+
+      if (!resp.ok) {
+        // mensagens típicas do seu backend
+        const msg = json.msg || `Falha no envio (${resp.status}).`;
+        setStatus(`❌ ${msg}`, "red");
+      } else {
+        setStatus("✅ Check-in realizado com sucesso!", "green");
+      }
+    } catch (e) {
+      console.error(e);
+      setStatus("❌ Erro de rede ao enviar.", "red");
+    } finally {
+      btn.disabled = false;
+    }
   }
+
+  // Clique no botão
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    doCheckin();
+  });
+
+  // Utilitário para você testar manual no console
+  window.__doCheckin = doCheckin;
 })();
-
-// também expõe para teste manual no console:
-// __doCheckin()
-window.__doCheckin = doCheckin;

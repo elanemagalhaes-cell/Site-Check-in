@@ -1,19 +1,4 @@
-// functions/api/checkin.js  (versão sem @supabase/supabase-js)
-
-const calcularDistKm = (lat1, lon1, lat2, lon2) => {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) *
-      Math.cos(lat2 * Math.PI / 180) *
-      Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-};
-
-const normId = (v) => String(v ?? '').trim().replace(/\.0$/, '');
-
+// Cloudflare Pages Functions - /api/checkin (POST)
 const makeCors = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -21,128 +6,136 @@ const makeCors = (body, status = 200) =>
       "content-type": "application/json",
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "content-type"
-    }
+      "access-control-allow-headers": "content-type",
+    },
   });
 
 export const onRequestOptions = async () => makeCors({}, 204);
 
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000; // m
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const normId = (v) =>
+  String(v ?? "")
+    .replace(/[^\dA-Za-z]/g, "")
+    .trim();
+
 export const onRequestPost = async ({ request, env }) => {
-  try {
-    const SUPABASE_URL = env.SUPABASE_URL;
-    const SUPABASE_SERVICE_KEY = env.SUPABASE_SERVICE_KEY;
-    const LAT_BASE = parseFloat(env.LAT_BASE ?? "-22.798782412241856");
-    const LNG_BASE = parseFloat(env.LNG_BASE ?? "-43.3489248374091");
-    const RADIUS_KM = parseFloat(env.RADIUS_KM ?? "1");
-    const MIN_ACCURACY_OK = parseFloat(env.MIN_ACCURACY_OK ?? "1200");
+  // ======= CONFIG DO HUB (fixa no código) =======
+  const LAT_BASE = -22.79999;
+  const LNG_BASE = -43.35049;
+  const MAX_DIST_METERS = 2000; // 2 km
+  const MIN_ACCURACY_OK = parseFloat(env.MIN_ACCURACY_OK ?? "60"); // m (pode ajustar em Variáveis do Pages)
 
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-      return makeCors({ ok: false, msg: "Config do servidor ausente." }, 500);
-    }
+  // ======= SUPABASE (opcional, mas recomendado) =======
+  const SUPABASE_URL = env.SUPABASE_URL;
+  const SUPABASE_SERVICE_KEY = env.SUPABASE_SERVICE_KEY;
 
-    const { id, lat, lng, acc, deviceId, ua } = await request.json();
-    const idDriver = normId(id);
-
-    if (!idDriver) return makeCors({ ok: false, msg: "ID não informado." }, 400);
-    if (lat == null || lng == null) return makeCors({ ok: false, msg: "Ative o GPS e tente novamente." }, 400);
-    if (acc && Number(acc) > MIN_ACCURACY_OK) return makeCors({ ok: false, msg: "Sinal de GPS fraco. Vá para área aberta." }, 400);
-    if (!deviceId) return makeCors({ ok: false, msg: "Dispositivo não identificado." }, 400);
-
-    const headers = {
-      "apikey": SUPABASE_SERVICE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
-      "Content-Type": "application/json",
-      "Prefer": "return=representation"
-    };
-
-    // 1) Busca nome e corredor do escalado do dia
-    let nome, corridor;
-    {
-      const url = new URL(`${SUPABASE_URL}/rest/v1/escalados_dia`);
-      url.searchParams.set("select", "driver,corridor");
-      url.searchParams.set("id_driver", `eq.${idDriver}`);
-      url.searchParams.set("limit", "1");
-      const r = await fetch(url, { headers });
-      if (!r.ok) return makeCors({ ok: false, msg: "Falha ao consultar escala do dia." }, 500);
-      const arr = await r.json();
-      if (!arr || !arr.length) return makeCors({ ok: false, msg: "ID não encontrado na escala do dia." }, 404);
-      nome = arr[0].driver;
-      corridor = arr[0].corridor;
-    }
-
-    // Janela do dia (00:00–23:59)
-    const now = new Date();
-    const yyyy = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate()).padStart(2, '0');
-    const inicio = `${yyyy}-${mm}-${dd}T00:00:00`;
-    const fim    = `${yyyy}-${mm}-${dd}T23:59:59`;
-
-    // 2a) Mesmo device não pode registrar para outro ID no mesmo dia
-    {
-      const url = new URL(`${SUPABASE_URL}/rest/v1/checkins`);
-      url.searchParams.set("select", "id_driver");
-      url.searchParams.set("device_id", `eq.${deviceId}`);
-      url.searchParams.set("created_at", `gte.${inicio}`);
-      url.searchParams.append("created_at", `lte.${fim}`);
-      url.searchParams.set("limit", "1");
-      const r = await fetch(url, { headers });
-      if (!r.ok) return makeCors({ ok: false, msg: "Falha ao validar dispositivo." }, 500);
-      const arr = await r.json();
-      if (arr && arr.length) {
-        const idJaUsado = String(arr[0].id_driver ?? '').trim();
-        if (idJaUsado && idJaUsado !== idDriver) {
-          return makeCors({ ok: false, msg: `Este aparelho já realizou check-in hoje para o ID ${idJaUsado}.` }, 403);
-        }
-      }
-    }
-
-    // 2b) Mesmo ID não pode bater duas vezes no dia
-    {
-      const url = new URL(`${SUPABASE_URL}/rest/v1/checkins`);
-      url.searchParams.set("select", "id");
-      url.searchParams.set("id_driver", `eq.${idDriver}`);
-      url.searchParams.set("created_at", `gte.${inicio}`);
-      url.searchParams.append("created_at", `lte.${fim}`);
-      url.searchParams.set("limit", "1");
-      const r = await fetch(url, { headers });
-      if (!r.ok) return makeCors({ ok: false, msg: "Falha ao validar repetição." }, 500);
-      const arr = await r.json();
-      if (arr && arr.length) return makeCors({ ok: false, msg: "Este ID já realizou check-in hoje." }, 403);
-    }
-
-    // 3) Geofence
-    const dist = calcularDistKm(LAT_BASE, LNG_BASE, Number(lat), Number(lng));
-    const dentro = dist <= (RADIUS_KM + 0.2);
-    const status = dentro ? 'DENTRO_RAIO' : 'FORA_RAIO';
-
-    // 4) Inserção no checkins
-    {
-      const url = `${SUPABASE_URL}/rest/v1/checkins`;
-      const body = [{
-        id_driver: idDriver,
-        driver: nome,
-        corridor,
-        lat: Number(lat),
-        lng: Number(lng),
-        accuracy: acc != null ? Number(acc) : null,
-        dist_km: dist,
-        geofence_status: status,
-        device_id: deviceId || null,
-        ua: ua || null
-      }];
-      const r = await fetch(url, {
-        method: "POST",
-        headers: { ...headers, "Prefer": "return=minimal" },
-        body: JSON.stringify(body)
-      });
-      if (!r.ok) return makeCors({ ok: false, msg: "Falha ao registrar." }, 500);
-    }
-
-    if (!dentro) return makeCors({ ok: false, msg: "❌ Fora do raio permitido." }, 200);
-    return makeCors({ ok: true, msg: "✅ Check-in registrado com sucesso!", nome, id: idDriver, corridor }, 200);
-
-  } catch (e) {
-    return makeCors({ ok: false, msg: "Erro inesperado." }, 500);
+  // valida config mínima
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    // continua validando, só não vai salvar no DB
+    console.warn("[checkin] SUPABASE não configurado. Apenas validando geofence.");
   }
+
+  let json;
+  try {
+    json = await request.json();
+  } catch {
+    return makeCors({ ok: false, msg: "JSON inválido." }, 400);
+  }
+
+  const id = normId(json.id);
+  const lat = parseFloat(json.lat);
+  const lng = parseFloat(json.lng);
+  const acc = parseFloat(String(json.acc ?? "").replace("m", "")); // vem '13.2m' às vezes
+  const deviceId = String(json.deviceId ?? "");
+  const ua = String(json.ua ?? "");
+
+  if (!id) return makeCors({ ok: false, msg: "ID não informado." }, 400);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng))
+    return makeCors({ ok: false, msg: "Localização inválida." }, 400);
+
+  // valida precisão
+  if (Number.isFinite(acc) && acc > MIN_ACCURACY_OK) {
+    return makeCors(
+      { ok: false, msg: "Sinal de GPS fraco. Vá para área aberta." },
+      400
+    );
+  }
+
+  // distancia até a base
+  const distance = Math.round(haversineMeters(lat, lng, LAT_BASE, LNG_BASE));
+  const inside = distance <= MAX_DIST_METERS;
+
+  if (!inside) {
+    return makeCors(
+      {
+        ok: false,
+        msg: `Fora do perímetro (distância ${distance}m > ${MAX_DIST_METERS}m).`,
+        distance,
+      },
+      403
+    );
+  }
+
+  // --- opcional: grava no Supabase e impede duplicidade diária ---
+  let saved = false;
+  try {
+    if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
+      const resp = await fetch(`${SUPABASE_URL}/rest/v1/checkins`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+          Prefer: "return=representation",
+        },
+        body: JSON.stringify({
+          id,
+          lat,
+          lng,
+          acc,
+          distance_m: distance,
+          inside,
+          device_id: deviceId || null,
+          user_agent: ua || null,
+          created_at: new Date().toISOString(),
+        }),
+      });
+
+      if (!resp.ok) {
+        // Se você configurou RLS para impedir 2 check-ins/dia por id, pode cair aqui com 403/409
+        const err = await resp.text();
+        console.error("[Supabase insert ERRO]", resp.status, err);
+        if (resp.status === 409 || resp.status === 403) {
+          return makeCors(
+            { ok: false, msg: "Este ID já realizou check-in hoje." },
+            403
+          );
+        }
+        throw new Error(`Supabase falhou: ${resp.status}`);
+      }
+      saved = true;
+    }
+  } catch (e) {
+    console.error("[checkin] falha ao gravar:", e);
+    // Não bloqueia se só quer validar perímetro; comente a linha abaixo se preferir seguir mesmo sem DB
+    // return makeCors({ ok: false, msg: "Falha ao salvar o check-in." }, 500);
+  }
+
+  return makeCors({
+    ok: true,
+    msg: "Check-in registrado com sucesso!",
+    id,
+    distance,
+    saved,
+  });
 };

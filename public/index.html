@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Check-in HUB</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:#fff;margin:0;display:flex;justify-content:center}
+    .wrap{max-width:380px;width:100%;padding:24px 16px}
+    .card{background:#fff;border-radius:16px;box-shadow:0 6px 18px rgba(0,0,0,.08);padding:20px}
+    .logo{display:block;margin:28px auto 8px;width:160px;height:auto}
+    h1{font-size:26px;margin:6px 0 18px;text-align:center;color:#b85d2c}
+    .input{width:100%;box-sizing:border-box;padding:14px 12px;border:1px solid #e6e6e6;border-radius:10px;font-size:16px}
+    .btn{margin-top:14px;width:100%;padding:14px;border:none;border-radius:10px;background:#e58a52;color:#fff;font-weight:600;font-size:16px;cursor:pointer}
+    .msg{margin-top:14px;font-size:14px}
+    .muted{color:#777;font-size:12px;margin-top:6px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <img class="logo" src="assets/shopee-dog.png" alt="Shopee mascot">
+    <div class="card">
+      <h1>📍 Check-in HUB</h1>
+      <input id="id" class="input" inputmode="numeric" placeholder="Driver ID" />
+      <button class="btn" id="btn">Registrar</button>
+      <div id="out" class="msg"></div>
+      <div class="muted">Ative o GPS e permita a localização.</div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const out = $('#out'), idEl = $('#id'), btn = $('#btn');
+
+    async function getPosition() {
+      return new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(
+          (p) => resolve(p),
+          (e) => reject(e),
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+      });
+    }
+
+    btn.addEventListener('click', async () => {
+      out.textContent = 'Enviando...';
+      try {
+        const id = idEl.value.trim();
+        if (!id) { out.textContent = 'Informe seu Driver ID.'; return; }
+
+        const pos = await getPosition();
+        const { latitude:lat, longitude:lng, accuracy:acc } = pos.coords || {};
+        const payload = {
+          id, lat, lng, acc,
+          deviceId: (await crypto.subtle.digest("SHA-256", new TextEncoder().encode(navigator.userAgent + (navigator.platform||""))))
+            .then(buf => Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')),
+          ua: navigator.userAgent
+        };
+        payload.deviceId = await payload.deviceId;
+
+        const r = await fetch('/api/checkin', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await r.json();
+        out.textContent = data.msg || 'OK';
+
+      } catch (e) {
+        out.textContent = 'Falha ao obter localização ou enviar.';
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,143 +1,128 @@
-// functions/api/checkin.js
-// Cloudflare Pages Functions (runtime edge)
+(function () {
+  const $ = (sel, ctx = document) => ctx.querySelector(sel);
 
-const toRad = (deg) => (deg * Math.PI) / 180;
-const haversineKm = (lat1, lon1, lat2, lon2) => {
-  const R = 6371;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-};
+  const form = $('#checkin-form');
+  const input = $('#driver-id');
+  const btn   = $('#btn-submit');
+  const statusEl = $('#status');
 
-const json = (data, status = 200) =>
-  new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-headers": "content-type",
-      "access-control-allow-methods": "POST, OPTIONS",
-    },
-  });
+  const setStatus = (msg, kind = '') => {
+    statusEl.textContent = msg || '';
+    statusEl.className = `status ${kind}`;
+  };
 
-export const onRequestOptions = async () => json({}, 204);
+  // ---- Geolocalização com timeout + fallback
+  function getPosition(opts = {}) {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Geolocalização não suportada'));
+        return;
+      }
+      const onOk = p => resolve({
+        lat:  +p.coords.latitude.toFixed(6),
+        lng:  +p.coords.longitude.toFixed(6),
+        acc:  Math.round(p.coords.accuracy)
+      });
+      const onErr = e => reject(e);
 
-export const onRequestPost = async ({ request, env }) => {
-  try {
-    // --- ENV obrigatórias ---
-    const SUPABASE_URL = env.SUPABASE_URL;
-    const SUPABASE_SERVICE_KEY = env.SUPABASE_SERVICE_KEY;
-
-    // Coordenadas do HUB (Maps) e raio
-    const LAT_BASE = parseFloat(env.LAT_BASE ?? "-22.79999");     // HUB lat
-    const LNG_BASE = parseFloat(env.LNG_BASE ?? "-43.35049");     // HUB lng
-    const RADIUS_KM = parseFloat(env.RADIUS_KM ?? "2");           // 2 km
-    const MIN_ACCURACY_OK = parseFloat(env.MIN_ACCURACY_OK ?? "60"); // em metros
-
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-      return json({ ok: false, msg: "Config do servidor ausente." }, 500);
-    }
-
-    // --- corpo da requisição ---
-    const { id, lat, lng, acc, deviceId, ua } = await request.json().catch(() => ({}));
-
-    if (!id) return json({ ok: false, msg: "ID não informado." }, 400);
-    if (typeof lat !== "number" || typeof lng !== "number") {
-      return json({ ok: false, msg: "Localização inválida." }, 400);
-    }
-
-    // Precisão do GPS
-    if (typeof acc === "number" && acc > MIN_ACCURACY_OK) {
-      return json(
-        { ok: false, msg: "Sinal de GPS fraco. Vá para área aberta." },
-        400
-      );
-    }
-
-    // Distância até o HUB
-    const distKm = haversineKm(lat, lng, LAT_BASE, LNG_BASE);
-    const dentro = distKm <= RADIUS_KM;
-
-    if (!dentro) {
-      return json(
-        {
-          ok: false,
-          msg: `Fora do perímetro (dist=${distKm.toFixed(3)} km, limite=${RADIUS_KM} km).`,
-        },
-        403
-      );
-    }
-
-    // (opcional) Bloquear check-in repetido no mesmo dia
-    // Busca mínima (pode adaptar ao seu schema)
-    const hoje0 = new Date();
-    hoje0.setHours(0, 0, 0, 0);
-    const fromISO = hoje0.toISOString();
-
-    const qDup = new URL(`${SUPABASE_URL}/rest/v1/checkins`);
-    qDup.searchParams.set("select", "id");
-    qDup.searchParams.set("id", `eq.${id}`);
-    qDup.searchParams.set("created_at", `gte.${fromISO}`);
-
-    const dupResp = await fetch(qDup, {
-      headers: {
-        apikey: SUPABASE_SERVICE_KEY,
-        authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        "content-type": "application/json",
-        prefer: "count=exact",
-      },
+      navigator.geolocation.getCurrentPosition(onOk, onErr, {
+        enableHighAccuracy: true,
+        timeout: opts.timeout ?? 15000,
+        maximumAge: opts.maximumAge ?? 0
+      });
     });
+  }
 
-    if (!dupResp.ok) {
-      // apenas log
-      console.warn("dupResp fail", dupResp.status);
-    } else {
-      const items = await dupResp.json();
-      if (Array.isArray(items) && items.length > 0) {
-        return json({ ok: false, msg: "Este ID já realizou check-in hoje." }, 403);
+  async function locate() {
+    // 1) veja permissão para mensagens melhores
+    try {
+      const perm = await navigator.permissions?.query({ name: 'geolocation' });
+      if (perm && perm.state === 'denied') {
+        throw new Error('Permissão de localização negada no navegador');
+      }
+    } catch { /* ignora se Permissions API não existir */ }
+
+    // 2) tenta atual
+    try {
+      return await getPosition({ timeout: 15000, maximumAge: 0 });
+    } catch (e1) {
+      // 3) fallback para posição em cache recente (até 5 minutos)
+      try {
+        return await getPosition({ timeout: 5000, maximumAge: 5 * 60 * 1000 });
+      } catch (e2) {
+        throw e1; // mantém o erro original (mais explicativo)
       }
     }
+  }
 
-    // Inserção no Supabase via REST
-    const insertResp = await fetch(`${SUPABASE_URL}/rest/v1/checkins`, {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_SERVICE_KEY,
-        authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        "content-type": "application/json",
-        prefer: "return=representation",
-      },
-      body: JSON.stringify([
-        {
-          id,
-          lat,
-          lng,
-          acc,
-          device_id: deviceId ?? null,
-          user_agent: ua ?? null,
-          distance_km: distKm,
-          created_at: new Date().toISOString(),
-        },
-      ]),
-    });
-
-    const body = await insertResp.json().catch(() => ({}));
-    if (!insertResp.ok) {
-      return json(
-        { ok: false, msg: "Erro ao gravar no banco.", detail: body },
-        500
-      );
+  async function doCheckin() {
+    const id = (input.value || '').trim();
+    if (!id) {
+      setStatus('Informe seu ID.', 'err');
+      input.focus();
+      return;
     }
 
-    return json({
-      ok: true,
-      msg: "Check-in registrado com sucesso!",
-      dist_km: Number(distKm.toFixed(3)),
-    });
-  } catch (err) {
-    return json({ ok: false, msg: String(err?.message || err) }, 500);
+    btn.disabled = true;
+    setStatus('Capturando localização…');
+
+    let pos;
+    try {
+      pos = await locate();
+      // Mostra no rodapé para o usuário saber que veio coordenada
+      setStatus(`Localização: lat ${pos.lat}, lng ${pos.lng}, precisão ${pos.acc}m`);
+    } catch (err) {
+      setStatus('Falha ao obter localização. Verifique o GPS/permissão e tente novamente.', 'err');
+      btn.disabled = false;
+      return;
+    }
+
+    // Envia para a Function
+    try {
+      const resp = await fetch('/api/checkin', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id,
+          lat: pos.lat,
+          lng: pos.lng,
+          acc: pos.acc,
+          deviceId: 'web',
+          ua: navigator.userAgent
+        })
+      });
+
+      // Tenta decodificar JSON mesmo com 4xx para exibir a razão
+      let json = null;
+      try { json = await resp.json(); } catch {}
+
+      if (!resp.ok || !json?.ok) {
+        // Mensagem vinda do servidor (ex.: já fez check-in)
+        const reason = json?.msg || `Falha no envio (${resp.status})`;
+        throw new Error(reason);
+      }
+
+      setStatus('✅ Check-in realizado com sucesso!', 'ok');
+      input.value = '';
+    } catch (err) {
+      setStatus(String(err.message || err), 'err');
+    } finally {
+      btn.disabled = false;
+    }
   }
-};
+
+  // Garante que os listeners sejam ligados com o DOM pronto
+  document.addEventListener('DOMContentLoaded', () => {
+    // pequena proteção: só liga se os elementos existirem
+    if (!form || !input || !btn || !statusEl) return;
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      doCheckin();
+    });
+
+    // expõe função debug no console, caso precise testar manualmente
+    window.__doCheckin = doCheckin;
+    console.log('🔧 front-end pronto — clique em “Registrar” ou rode __doCheckin()');
+  });
+})();

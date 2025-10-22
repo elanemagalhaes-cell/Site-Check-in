@@ -1,4 +1,8 @@
 {
-  "version": 1,
-  "include": ["/api/*"]
+  "functions": {
+    "api/*.js": { "runtime": "edge" }
+  },
+  "redirects": [
+    { "source": "/", "destination": "/public/index.html" }
+  ]
 }

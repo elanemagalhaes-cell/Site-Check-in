@@ -1,131 +1,154 @@
 <!doctype html>
-<html lang="pt-br">
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Check-in HUB</title>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#fff;margin:0}
-    .wrap{max-width:520px;margin:48px auto;padding:24px 20px;border-radius:16px;box-shadow:0 10px 24px rgba(0,0,0,.05);border:1px solid #eee}
-    h1{font-size:28px;margin:0 0 16px;color:#a8582f}
-    .row{margin:12px 0}
-    input{width:100%;font-size:18px;padding:14px;border:1px solid #ddd;border-radius:10px}
-    button{width:100%;padding:14px 16px;font-size:18px;border:0;border-radius:10px;background:#df864f;color:#fff;cursor:pointer}
-    button:disabled{opacity:.6;cursor:not-allowed}
-    #msg{margin-top:12px;font-size:15px}
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin:0; }
+    .wrap { min-height: 100dvh; display:grid; place-items:center; background:#fff5ef; }
+    .card { width:min(92vw, 560px); background:#fff; border-radius:20px; padding:28px; box-shadow:0 12px 24px rgba(0,0,0,.08); }
+    .title { font-size:clamp(22px,3.8vw,28px); font-weight:800; color:#a6532d; display:flex; gap:8px; align-items:center; margin-bottom:18px; }
+    .pin { font-size:20px }
+    .input, .btn { width:100%; border-radius:12px; border:none; font-size:18px; }
+    .input { padding:14px 16px; background:#fafafa; outline:2px solid transparent; transition:.15s; }
+    .input:focus { outline-color:#ffb088; background:#fff; }
+    .btn { margin-top:14px; padding:16px; background:#df824f; color:#fff; font-weight:700; cursor:pointer; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    .hint { margin-top:10px; color:#555; font-size:14px }
+    .ok { color:#1c7c43 } .err { color:#b00020 }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>📍 Check-in HUB</h1>
+    <main class="card">
+      <h1 class="title"><span class="pin">📍</span>Check-in HUB</h1>
 
-    <div class="row">
-      <input id="id" inputmode="numeric" autocomplete="off" placeholder="Digite seu ID" />
-    </div>
+      <form id="form">
+        <input id="id" class="input" inputmode="numeric" autocomplete="one-time-code"
+               placeholder="Informe seu ID" required />
+        <button id="btn" class="btn" type="submit">Registrar</button>
+      </form>
 
-    <div class="row">
-      <button id="btn" type="button">Registrar</button>
-    </div>
-
-    <div id="msg"></div>
-
-    <details style="margin-top:10px">
-      <summary>Debug</summary>
-      <div id="dbg" style="font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;white-space:pre-wrap"></div>
-    </details>
+      <p id="status" class="hint">Ative o GPS e permita a localização.</p>
+      <p id="log" class="hint" style="margin-top:4px"></p>
+    </main>
   </div>
 
-  <script defer>
-    // util de mensagem
-    const msg = (text, ok=false) => {
-      const el = document.getElementById('msg');
-      el.textContent = text;
-      el.style.color = ok ? '#1b873f' : '#b00020';
-      console.log('CHK: MSG →', text);
+  <script>
+    // -------- utilidades de UI / logs
+    const $ = sel => document.querySelector(sel);
+    const ui = {
+      status: $('#status'),
+      log:    $('#log'),
+      btn:    $('#btn'),
+      id:     $('#id'),
+      set(t, cls='') { this.status.textContent = t; this.status.className = 'hint ' + cls; },
+      msg(t)  { this.log.textContent = t; },
+      busy(b) { this.btn.disabled = b; this.btn.textContent = b ? 'Enviando…' : 'Registrar'; }
     };
-    const dbg = (...a) => {
-      console.log('CHK:', ...a);
-      const d = document.getElementById('dbg');
-      d.textContent += a.map(v => typeof v==='string'? v : JSON.stringify(v)).join(' ') + '\n';
-    };
+    const dlog = (...a) => { console.log('[CHK]', ...a); ui.msg(a.map(x => typeof x==='string'?x:JSON.stringify(x)).join(' ')); };
 
-    // obter localização (promisificado)
-    function getPosition() {
+    // -------- geolocalização em Promise
+    function getPosition(opts = { enableHighAccuracy:true, timeout:15000, maximumAge:0 }) {
       return new Promise((resolve, reject) => {
-        if (!('geolocation' in navigator)) {
-          reject(new Error('Geolocalização não suportada.'));
-          return;
-        }
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true, timeout: 15000, maximumAge: 0
-        });
+        if (!('geolocation' in navigator)) return reject(new Error('Geolocalização indisponível'));
+        navigator.geolocation.getCurrentPosition(
+          p => resolve({
+            lat:  +p.coords.latitude.toFixed(6),
+            lng:  +p.coords.longitude.toFixed(6),
+            acc:  +p.coords.accuracy.toFixed(2)
+          }),
+          err => reject(err),
+          opts
+        );
       });
     }
 
-    // fluxo do botão
-    async function doCheckin() {
-      const btn = document.getElementById('btn');
-      const id  = document.getElementById('id').value.trim();
-
-      if (!id) { msg('Informe o ID.', false); return; }
-
-      btn.disabled = true; msg('Obtendo localização…');
+    // -------- storage simples para um deviceId estável
+    function getDeviceId(){
       try {
-        // 1) Geolocalização
-        const pos = await getPosition();
-        const lat = +pos.coords.latitude.toFixed(6);
-        const lng = +pos.coords.longitude.toFixed(6);
-        const acc = +pos.coords.accuracy.toFixed(2); // número
-
-        dbg('Local:', { lat, lng, acc });
-
-        // 2) Ping de sanidade (opcional)
-        try {
-          const ping = await fetch('/api/ping').then(r=>r.json());
-          dbg('Ping:', ping);
-        } catch(_) { dbg('Ping falhou (ignorado)'); }
-
-        msg('Enviando check-in…');
-
-        // 3) POST /api/checkin (igual ao do console)
-        const body = {
-          id,
-          lat,
-          lng,
-          acc,
-          deviceId: localStorage.getItem('cid') || 'web',
-          ua: navigator.userAgent
-        };
-
-        const resp = await fetch('/api/checkin', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-
-        const json = await resp.json().catch(()=> ({}));
-        dbg('Resposta /api/checkin:', resp.status, json);
-
-        if (!resp.ok) {
-          // MOSTRA motivo real (403 duplicado, fora do perímetro, etc.)
-          msg(json?.msg || `Erro ${resp.status}`, false);
-          return;
-        }
-
-        msg(json?.msg || 'Check-in registrado com sucesso!', true);
-      } catch (e) {
-        // erro de geolocalização ou fetch
-        msg(e?.message || 'Falha ao obter localização ou enviar.', false);
-      } finally {
-        btn.disabled = false;
-      }
+        const k='chk_device_id';
+        let v = localStorage.getItem(k);
+        if (!v) { v = crypto.randomUUID?.() || Math.random().toString(36).slice(2); localStorage.setItem(k, v); }
+        return v;
+      } catch { return 'web-device'; }
     }
 
-    // conectar handler quando DOM estiver pronto
-    window.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('btn').addEventListener('click', doCheckin);
-      dbg('DOM pronto. Handler conectado.');
+    // -------- envio do check-in
+    async function doCheckin(id){
+      ui.busy(true);
+      dlog('Iniciando… ID:', id);
+
+      // 1) localização
+      ui.set('Obtendo localização…');
+      const pos = await getPosition();
+      dlog('Local:', pos);
+
+      // 2) ping (opcional, para ver roteamento das Functions)
+      try {
+        const pong = await fetch('/api/ping').then(r=>r.json());
+        dlog('Ping:', pong);
+      } catch(e){ dlog('Ping falhou:', e.message); }
+
+      // 3) envio
+      ui.set('Enviando check-in…');
+      const body = {
+        id: id.trim(),
+        lat: pos.lat, lng: pos.lng, acc: pos.acc,
+        deviceId: getDeviceId(),
+        ua: navigator.userAgent
+      };
+
+      const resp = await fetch('/api/checkin', {
+        method:'POST',
+        headers:{'content-type':'application/json'},
+        body: JSON.stringify(body)
+      });
+
+      let json = null;
+      try { json = await resp.json(); } catch{}
+
+      dlog('Resposta /api/checkin:', resp.status, json || '<sem json>');
+
+      if (!resp.ok) {
+        const msg = (json && json.msg) ? json.msg : `Falha (${resp.status})`;
+        throw new Error(msg);
+      }
+      return json;
+    }
+
+    // -------- handler do formulário
+    $('#form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();                       // evita recarregar a página
+      const id = ui.id.value.trim();
+      if (!id) { ui.set('Informe o ID.', 'err'); return; }
+
+      try {
+        ui.set('Preparando…');
+        // checa/mostra permissão de geolocalização (só loga; não para o fluxo)
+        try {
+          const p = await navigator.permissions?.query?.({ name: 'geolocation' });
+          if (p) dlog('Permissão geolocation:', p.state);
+        } catch {}
+
+        const out = await doCheckin(id);
+
+        ui.set(out.msg || 'Check-in registrado com sucesso!', 'ok');
+        dlog('OK:', out);
+      } catch (err) {
+        console.error(err);
+        ui.set('Falha ao obter localização ou enviar.', 'err');
+        ui.msg(err.message || String(err));
+      } finally {
+        ui.busy(false);
+      }
     });
+
+    // foco inicial para facilitar o teste
+    ui.id.focus();
   </script>
 </body>
 </html>

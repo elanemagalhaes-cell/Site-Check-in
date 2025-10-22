@@ -1,127 +1,131 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Check-in HUB</title>
-    <style>
-      body {
-        background: #fff;
-        font-family: Arial, sans-serif;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 100vh;
-      }
-      .card {
-        background: #fffaf5;
-        padding: 2rem;
-        border-radius: 20px;
-        box-shadow: 0 0 10px #ff7b00a1;
-        text-align: center;
-        width: 300px;
-      }
-      h2 {
-        color: #ff6600;
-        margin-bottom: 1rem;
-      }
-      input {
-        width: 100%;
-        padding: 10px;
-        border: 1px solid #ccc;
-        border-radius: 8px;
-      }
-      button {
-        margin-top: 1rem;
-        width: 100%;
-        padding: 12px;
-        background: #ff6600;
-        color: white;
-        font-weight: bold;
-        border: none;
-        border-radius: 8px;
-        cursor: pointer;
-      }
-      #status {
-        margin-top: 1rem;
-        font-weight: bold;
-      }
-      .logo {
-        width: 100px;
-      }
-    </style>
-  </head>
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Check-in HUB</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#fff;margin:0}
+    .wrap{max-width:520px;margin:48px auto;padding:24px 20px;border-radius:16px;box-shadow:0 10px 24px rgba(0,0,0,.05);border:1px solid #eee}
+    h1{font-size:28px;margin:0 0 16px;color:#a8582f}
+    .row{margin:12px 0}
+    input{width:100%;font-size:18px;padding:14px;border:1px solid #ddd;border-radius:10px}
+    button{width:100%;padding:14px 16px;font-size:18px;border:0;border-radius:10px;background:#df864f;color:#fff;cursor:pointer}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    #msg{margin-top:12px;font-size:15px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>📍 Check-in HUB</h1>
 
-  <body>
-    <img
-      src="https://cf.shopee.com.br/file/b0f9b7d0f9b7b0f9b7d0.png"
-      alt="Shopee Mascote"
-      class="logo"
-    />
-
-    <div class="card">
-      <h2>📍 Check-in HUB</h2>
-      <input id="input-id" placeholder="Digite seu ID" />
-      <button id="btn-checkin">Registrar</button>
-      <div id="status">Ative o GPS e permita a localização.</div>
+    <div class="row">
+      <input id="id" inputmode="numeric" autocomplete="off" placeholder="Digite seu ID" />
     </div>
 
-    <script>
-      const btn = document.querySelector("#btn-checkin");
-      const inputId = document.querySelector("#input-id");
-      const statusEl = document.querySelector("#status");
+    <div class="row">
+      <button id="btn" type="button">Registrar</button>
+    </div>
 
-      const show = (msg, ok = false) => {
-        statusEl.textContent = msg;
-        statusEl.style.color = ok ? "#2e7d32" : "#c62828";
-      };
+    <div id="msg"></div>
 
-      const getPosition = () =>
-        new Promise((resolve, reject) =>
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 15000,
-            maximumAge: 0,
-          })
-        );
+    <details style="margin-top:10px">
+      <summary>Debug</summary>
+      <div id="dbg" style="font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;white-space:pre-wrap"></div>
+    </details>
+  </div>
 
-      btn.addEventListener("click", async () => {
-        const id = inputId.value.trim();
-        if (!id) return show("Informe seu ID!");
+  <script defer>
+    // util de mensagem
+    const msg = (text, ok=false) => {
+      const el = document.getElementById('msg');
+      el.textContent = text;
+      el.style.color = ok ? '#1b873f' : '#b00020';
+      console.log('CHK: MSG →', text);
+    };
+    const dbg = (...a) => {
+      console.log('CHK:', ...a);
+      const d = document.getElementById('dbg');
+      d.textContent += a.map(v => typeof v==='string'? v : JSON.stringify(v)).join(' ') + '\n';
+    };
 
-        show("⏳ Obtendo localização...");
-        let pos;
-        try {
-          pos = await getPosition();
-        } catch (e) {
-          return show("Erro ao obter localização. Ative o GPS.");
+    // obter localização (promisificado)
+    function getPosition() {
+      return new Promise((resolve, reject) => {
+        if (!('geolocation' in navigator)) {
+          reject(new Error('Geolocalização não suportada.'));
+          return;
         }
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true, timeout: 15000, maximumAge: 0
+        });
+      });
+    }
 
+    // fluxo do botão
+    async function doCheckin() {
+      const btn = document.getElementById('btn');
+      const id  = document.getElementById('id').value.trim();
+
+      if (!id) { msg('Informe o ID.', false); return; }
+
+      btn.disabled = true; msg('Obtendo localização…');
+      try {
+        // 1) Geolocalização
+        const pos = await getPosition();
+        const lat = +pos.coords.latitude.toFixed(6);
+        const lng = +pos.coords.longitude.toFixed(6);
+        const acc = +pos.coords.accuracy.toFixed(2); // número
+
+        dbg('Local:', { lat, lng, acc });
+
+        // 2) Ping de sanidade (opcional)
+        try {
+          const ping = await fetch('/api/ping').then(r=>r.json());
+          dbg('Ping:', ping);
+        } catch(_) { dbg('Ping falhou (ignorado)'); }
+
+        msg('Enviando check-in…');
+
+        // 3) POST /api/checkin (igual ao do console)
         const body = {
           id,
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          acc: pos.coords.accuracy,
-          deviceId:
-            localStorage.deviceId ??
-            (localStorage.deviceId = crypto.randomUUID()),
-          ua: navigator.userAgent,
+          lat,
+          lng,
+          acc,
+          deviceId: localStorage.getItem('cid') || 'web',
+          ua: navigator.userAgent
         };
 
-        const res = await fetch("/api/checkin", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
+        const resp = await fetch('/api/checkin', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
         });
 
-        const json = await res.json().catch(() => null);
-        if (json?.ok) {
-          show(json.msg, true);
-        } else {
-          show(json?.msg || "Falha ao enviar o check-in.");
+        const json = await resp.json().catch(()=> ({}));
+        dbg('Resposta /api/checkin:', resp.status, json);
+
+        if (!resp.ok) {
+          // MOSTRA motivo real (403 duplicado, fora do perímetro, etc.)
+          msg(json?.msg || `Erro ${resp.status}`, false);
+          return;
         }
-      });
-    </script>
-  </body>
+
+        msg(json?.msg || 'Check-in registrado com sucesso!', true);
+      } catch (e) {
+        // erro de geolocalização ou fetch
+        msg(e?.message || 'Falha ao obter localização ou enviar.', false);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // conectar handler quando DOM estiver pronto
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('btn').addEventListener('click', doCheckin);
+      dbg('DOM pronto. Handler conectado.');
+    });
+  </script>
+</body>
 </html>

@@ -29,15 +29,20 @@
       .pin { font-size: 22px; }
     </style>
     <!-- carregue depois do DOM para garantir que os seletores encontrem os elementos -->
-    <script defer src="./app.js"></script>
-  </head>
-  <body>
-    <div class="wrap">
-      <img class="logo" src="https://i.imgur.com/4tCz6uG.png" alt="kart" />
-      <div class="card">
-        <div class="title"><span class="pin">📍</span><h1>Check-in HUB</h1></div>
+   <!-- no <head> -->
+<script defer src="/app.js?v=2"></script>
+</head>
+<body>
+  <div class="card">
+    <h1>📍 Check-in HUB</h1>
 
-        <form id="checkin-form" autocomplete="off">
+    <input id="driverId" placeholder="Driver ID" />
+    <button id="btn">Registrar</button>
+
+    <p id="status" class="muted">Ative o GPS e permita a localização.</p>
+  </div>
+</body>
+   <form id="checkin-form" autocomplete="off">
           <input id="driver-id" type="text" inputmode="numeric" placeholder="Seu ID (ex.: 449213)" required />
           <button id="btn-submit" type="submit">Registrar</button>
           <div id="status" class="status"></div>
@@ -47,3 +52,5 @@
     </div>
   </body>
 </html>
+
+      
